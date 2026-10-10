@@ -31,6 +31,8 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
     var scanning by mutableStateOf(false); private set
     var sending by mutableStateOf(false); private set
     var status by mutableStateOf("")
+    /** Name of the last button or scene sent; drives the dial's glow. */
+    var lastCommand by mutableStateOf<String?>(null); private set
 
     private var nextId = 1
     private var lastPacketAt = 0L
@@ -70,9 +72,9 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Explains whether this payload was seen before — the key test for "same button = same packet?". */
     fun describe(hex: String, burstId: Int): String? {
-        buttons.firstOrNull { hex in it.payloads }?.let { return "= сохранённая кнопка «${it.name}»" }
-        val same = bursts.filter { it.id != burstId && hex in it.payloads }.map { "#${it.id}" }
-        return if (same.isEmpty()) null else "совпадает с пачкой ${same.joinToString()}"
+        buttons.firstOrNull { hex in it.payloads }?.let { return "Это кнопка «${it.name}»" }
+        val same = bursts.filter { it.id != burstId && hex in it.payloads }.map { it.id }
+        return if (same.isEmpty()) null else "Такой же пакет, как в нажатии ${same.joinToString()}"
     }
 
     private suspend fun sendPayloads(payloads: List<String>): String? {
@@ -87,8 +89,8 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
         if (sending || payloads.isEmpty()) return
         viewModelScope.launch {
             sending = true
-            status = "Отправляю «$label»…"
-            status = sendPayloads(payloads) ?: "Отправлено: «$label»"
+            lastCommand = label
+            status = sendPayloads(payloads) ?: ""
             sending = false
         }
     }
@@ -102,15 +104,15 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             sending = true
+            lastCommand = scene.name
             var err: String? = null
             for ((i, step) in scene.steps.withIndex()) {
-                status = "«${scene.name}»: ${i + 1}/${scene.steps.size} — $step"
                 val b = buttons.firstOrNull { it.name == step } ?: continue
                 err = sendPayloads(b.payloads)
                 if (err != null) break
                 if (i < scene.steps.lastIndex) delay(STEP_GAP_MS) // give the lamp time to react (e.g. to power on)
             }
-            status = err ?: "Сцена «${scene.name}» отправлена"
+            status = err ?: ""
             sending = false
         }
     }
@@ -118,7 +120,7 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
     fun saveButton(name: String, payloads: List<String>) {
         buttons = buttons.filter { it.name != name } + LampButton(name, payloads)
         persist()
-        status = "Сохранено: «$name»"
+        status = "Кнопка «$name» сохранена"
     }
 
     fun deleteButton(name: String) {
@@ -129,7 +131,7 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
     fun saveScene(scene: Scene) {
         scenes = scenes.filter { it.name != scene.name } + scene
         persist()
-        status = "Сцена сохранена: «${scene.name}»"
+        status = ""
     }
 
     fun deleteScene(name: String) {
