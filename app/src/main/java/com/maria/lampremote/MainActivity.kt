@@ -24,7 +24,10 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -67,6 +70,8 @@ private val SUGGESTIONS = listOf(
     "◐", "Лампочка", "Луна", "Солнце тёмное", "Солнце светлое",
 )
 
+private val WARM_SCENE = Scene("Тёплый свет", listOf("ON", "Солнце светлое"))
+
 private val timeFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
 
 private fun hasPerms(ctx: Context) =
@@ -101,6 +106,7 @@ fun App(vm: LampViewModel = viewModel()) {
     var saveBurstId by remember { mutableStateOf<Int?>(null) }
     var editMode by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
+    var showSceneDialog by remember { mutableStateOf(false) }
 
     Scaffold(topBar = { CenterAlignedTopAppBar(title = { Text("Пульт лампы") }) }) { pad ->
         if (!granted) {
@@ -119,6 +125,38 @@ fun App(vm: LampViewModel = viewModel()) {
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            // ---- Scenes ----
+            item { Text("Сцены", style = MaterialTheme.typography.titleLarge) }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (vm.scenes.isNotEmpty()) {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            vm.scenes.forEach { s ->
+                                if (editMode) {
+                                    OutlinedButton(onClick = { vm.deleteScene(s.name) }) { Text("✕ ${s.name}") }
+                                } else {
+                                    FilledTonalButton(onClick = { vm.runScene(s) }, enabled = !vm.sending) { Text(s.name) }
+                                }
+                            }
+                        }
+                    }
+                    val names = vm.buttons.map { it.name }
+                    if (vm.scenes.none { it.name == WARM_SCENE.name } && WARM_SCENE.steps.all { it in names }) {
+                        OutlinedButton(onClick = { vm.saveScene(WARM_SCENE) }) {
+                            Text("+ «${WARM_SCENE.name}»: ${WARM_SCENE.steps.joinToString(" → ")}")
+                        }
+                    }
+                    if (vm.buttons.isNotEmpty()) {
+                        TextButton(onClick = { showSceneDialog = true }) { Text("+ Новая сцена") }
+                    } else if (vm.scenes.isEmpty()) {
+                        Text("Сцена собирается из сохранённых кнопок — сначала запишите их.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
             // ---- Saved buttons ----
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -206,6 +244,53 @@ fun App(vm: LampViewModel = viewModel()) {
     if (showImport) {
         ImportDialog(onDismiss = { showImport = false }, onImport = { text -> vm.importJson(text) })
     }
+    if (showSceneDialog) {
+        SceneDialog(
+            buttonNames = vm.buttons.map { it.name },
+            onDismiss = { showSceneDialog = false },
+            onSave = { scene -> vm.saveScene(scene); showSceneDialog = false },
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SceneDialog(buttonNames: List<String>, onDismiss: () -> Unit, onSave: (Scene) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var steps by remember { mutableStateOf(listOf<String>()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Новая сцена") },
+        text = {
+            Column(
+                Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Название") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text("Нажимайте кнопки в нужном порядке:", style = MaterialTheme.typography.bodySmall)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    buttonNames.forEach { n -> SuggestionChip(onClick = { steps = steps + n }, label = { Text(n) }) }
+                }
+                Text(if (steps.isEmpty()) "Шаги: —" else "Шаги: " + steps.joinToString(" → "))
+                if (steps.isNotEmpty()) {
+                    TextButton(onClick = { steps = steps.dropLast(1) }) { Text("Убрать последний шаг") }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSave(Scene(name.trim(), steps)) },
+                enabled = name.isNotBlank() && steps.isNotEmpty(),
+            ) { Text("Сохранить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
 }
 
 @Composable
@@ -271,7 +356,7 @@ fun ImportDialog(onDismiss: () -> Unit, onImport: (String) -> String?) {
         title = { Text("Импорт кнопок") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Вставьте JSON, скопированный кнопкой «Экспорт». Текущие кнопки будут заменены.")
+                Text("Вставьте JSON, скопированный кнопкой «Экспорт». Текущие кнопки и сцены будут заменены.")
                 OutlinedTextField(
                     value = text,
                     onValueChange = { text = it; error = null },

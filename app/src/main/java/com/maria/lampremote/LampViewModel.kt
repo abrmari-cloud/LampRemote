@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** One button press on the remote = one burst of packets a few ms apart. */
@@ -23,7 +24,9 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
     private val ble = LampBle(app)
     private val store = ButtonStore(app)
 
-    var buttons by mutableStateOf(store.load()); private set
+    private val initial = store.load()
+    var buttons by mutableStateOf(initial.buttons); private set
+    var scenes by mutableStateOf(initial.scenes); private set
     var bursts by mutableStateOf(emptyList<Burst>()); private set
     var scanning by mutableStateOf(false); private set
     var sending by mutableStateOf(false); private set
@@ -31,6 +34,8 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
 
     private var nextId = 1
     private var lastPacketAt = 0L
+
+    private fun persist() = store.save(LampData(buttons, scenes))
 
     fun toggleScan() {
         if (scanning) {
@@ -70,45 +75,82 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
         return if (same.isEmpty()) null else "совпадает с пачкой ${same.joinToString()}"
     }
 
+    private suspend fun sendPayloads(payloads: List<String>): String? {
+        for (p in payloads) {
+            val err = ble.advertise(p.hexToBytes(), SEND_MS)
+            if (err != null) return err
+        }
+        return null
+    }
+
     fun send(label: String, payloads: List<String>) {
         if (sending || payloads.isEmpty()) return
         viewModelScope.launch {
             sending = true
             status = "Отправляю «$label»…"
+            status = sendPayloads(payloads) ?: "Отправлено: «$label»"
+            sending = false
+        }
+    }
+
+    fun runScene(scene: Scene) {
+        if (sending) return
+        val missing = scene.steps.filter { step -> buttons.none { it.name == step } }
+        if (missing.isNotEmpty()) {
+            status = "В сцене «${scene.name}» нет кнопок: ${missing.joinToString()}"
+            return
+        }
+        viewModelScope.launch {
+            sending = true
             var err: String? = null
-            for (p in payloads) {
-                err = ble.advertise(p.hexToBytes(), SEND_MS)
+            for ((i, step) in scene.steps.withIndex()) {
+                status = "«${scene.name}»: ${i + 1}/${scene.steps.size} — $step"
+                val b = buttons.firstOrNull { it.name == step } ?: continue
+                err = sendPayloads(b.payloads)
                 if (err != null) break
+                if (i < scene.steps.lastIndex) delay(STEP_GAP_MS) // give the lamp time to react (e.g. to power on)
             }
-            status = err ?: "Отправлено: «$label»"
+            status = err ?: "Сцена «${scene.name}» отправлена"
             sending = false
         }
     }
 
     fun saveButton(name: String, payloads: List<String>) {
         buttons = buttons.filter { it.name != name } + LampButton(name, payloads)
-        store.save(buttons)
+        persist()
         status = "Сохранено: «$name»"
     }
 
     fun deleteButton(name: String) {
         buttons = buttons.filter { it.name != name }
-        store.save(buttons)
+        persist()
+    }
+
+    fun saveScene(scene: Scene) {
+        scenes = scenes.filter { it.name != scene.name } + scene
+        persist()
+        status = "Сцена сохранена: «${scene.name}»"
+    }
+
+    fun deleteScene(name: String) {
+        scenes = scenes.filter { it.name != name }
+        persist()
     }
 
     fun clearBursts() {
         bursts = emptyList()
     }
 
-    fun exportJson(): String = store.toJson(buttons)
+    fun exportJson(): String = store.toJson(LampData(buttons, scenes))
 
     /** Returns an error text, or null on success. */
     fun importJson(text: String): String? {
         return try {
-            val list = store.fromJson(text)
-            buttons = list
-            store.save(list)
-            status = "Импортировано кнопок: ${list.size}"
+            val data = store.fromJson(text)
+            buttons = data.buttons
+            scenes = data.scenes
+            persist()
+            status = "Импортировано: кнопок ${data.buttons.size}, сцен ${data.scenes.size}"
             null
         } catch (e: Exception) {
             "Не удалось прочитать: ${e.message}"
@@ -124,5 +166,6 @@ class LampViewModel(app: Application) : AndroidViewModel(app) {
         const val BURST_GAP_MS = 400L
         const val MAX_BURSTS = 30
         const val SEND_MS = 700L
+        const val STEP_GAP_MS = 500L
     }
 }
